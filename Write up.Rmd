@@ -1,0 +1,198 @@
+---
+title: "Prediction Assignment Writeup"
+author: Ardeshir Damavandi
+date: September 20, 2014
+output: html_document
+---
+ 
+ 
+ 
+Load Data and Packages
+----------------------
+In this section, I simply load the csv files into R objects from my working directory.
+
+```{r,results='hide',message=FALSE}
+library(caret)
+library(corrplot)
+```
+
+```{r}
+pmlTrain <- read.csv("pml-training.csv")
+pmlTest <- read.csv("pml-testing.csv")
+```
+The dimensions for *pmlTrain* and *pmlTest* are respectively: 
+```{r, echo=FALSE}
+dim(pmlTrain); dim(pmlTest)
+```
+
+Clean Data
+----------------------
+First I replace every error code (#DIV/0!), blank cells and NA values by "NA". Then I keep the columns which have no NA value. Also I have removed the first 7 columns, because they are not considered to be predictors for Classe variable. 
+```{r}
+# Data Cleaning -----------------------------------------------------------
+
+# Train Data
+pmlTrain[pmlTrain=="" | pmlTrain=="#DIV/0!"] <- NA
+pmlTrain <- pmlTrain[, colSums(is.na(pmlTrain))==0]
+pmlTrain <- pmlTrain[,-c(1:7)]
+
+# Test Data
+pmlTest[pmlTest=="" | pmlTest=="#DIV/0!"] <- NA
+pmlTest <- pmlTest[, colSums(is.na(pmlTest))==0]
+pmlTest <- pmlTest[,-c(1:7)]
+```
+After removing the missing data, the dimensions for *pmlTrain* and *pmlTest* are respectively: 
+```{r, echo=FALSE}
+dim(pmlTrain); dim(pmlTest)
+```
+Partitioning The Data
+----------------------
+In order to have best performance in Accuracy and minimizing the Out Sample Error, I split the Training Data into 60% for training purpose and 40% for cross validation. 
+```{r}
+# Bootstrap ----------------------------------------------------------------
+
+set.seed(21)
+inTrain <- createDataPartition(pmlTrain$classe, p = 0.6, list = F)
+training <- pmlTrain[inTrain,]
+testing <- pmlTrain[-inTrain,]
+```
+Now, the dimensions for *training* and *testing* are respectively: 
+```{r, echo=FALSE}
+dim(training); dim(testing)
+```
+Exploratory Data Analysis
+----------------------
+I started with the frequencies of the Classe which we have to predict. In this way, we may have more ideas in building models for better Specificity and Sensitivity Values. Correlation between predictors is also an important issue. Thus, I tried to find the high correlated features and omit them in my model. 
+```{r}
+# Explore Training Data ---------------------------------------------------
+
+# Correlations
+correlationMatrix <- cor(subset(training, select=-c(classe)))
+highlyCorrelated <- findCorrelation(correlationMatrix, .90)
+```
+```{r, echo=FALSE,fig.height=6,fig.width=10}
+# Visualization
+# Frequency
+classeFrequency <- ggplot(training, aes(training$classe)) +
+  geom_histogram(color= "black",fill= rainbow(5))
+classeFrequency
+```
+```{r, echo=FALSE,fig.height=10,fig.width=10}
+# Correlations
+corrplot(correlationMatrix,method = "color",diag = F, tl.cex=0.7)
+```
+ 
+ 
+The highly correlated features are:
+
+```{r, echo=FALSE,results='markup'}
+names(pmlTrain[highlyCorrelated[1:7]])
+```
+```{r}
+# Remove highly correlated Features
+training <- training[, -highlyCorrelated]
+```
+Building Model
+----------------------
+Since this is a Classification problem and has different predictors with non-linear behavior, I decided to train my data using Random Forest and Gradiant Boosting Machine. In building both models, I used 4-fold cross validation.
+```{r, results='hide', message=FALSE}
+# Models ------------------------------------------------------------------
+
+# General Train Parameters
+modelControl <- trainControl(method = "cv",
+                         number = 4)
+```
+In addition, I tried to find best `mtry` value in Random Forest by setting this parameter with different values.
+```{r, results='hide', message=FALSE,warning=FALSE}
+# Random Forest
+model_rf <- train(classe ~ ., data = training,
+               method = "rf", ntree=50,
+               importance=T, 
+               trControl = modelControl,
+               tuneGrid = data.frame(mtry = c(3,10,23,35,46)))
+
+```
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+model_rf
+```
+To choose the best `mtry` and show the importance level of top 10 features, we have:
+```{r, echo=FALSE}
+plot(model_rf, log="y")
+```
+```{r, echo=FALSE,fig.height=8,fig.width=10}
+plot(varImp(model_rf, sort=T), top=10)
+```
+
+Now for GBM Model, I tried 3 different values of `interaction.depth` with the following parameters.
+```{r, results='hide',message=FALSE}
+# GBM
+gbmControl <- expand.grid(n.trees=c(10,30,50),
+                          interaction.depth=c(1,3,6),
+                          shrinkage= 0.1)
+model_gbm <- train(classe ~ ., data = training,
+                  method = "gbm", tuneGrid=gbmControl,
+                  trControl = modelControl)
+```
+```{r,echo=FALSE}
+model_gbm
+```
+Below plot shows the relationship between the estimates of performance and the tuning parameters.
+```{r, echo=FALSE}
+trellis.par.set(caretTheme())
+plot(model_gbm)
+
+```
+ 
+ 
+As a result, the `mtry=23` for the Random Forest Model and the `interaction.depth=6` for the GBM Model are  better choices.
+
+Out Sample Error
+----------------------
+Then I used each model to predict the Testing data (40% of total Data) and calculate the our sample error. 
+```{r}
+# Out Sample Error --------------------------------------------------------
+
+# Model Fit, Random Forest
+prediction_rf <- predict(model_rf, testing)
+
+# Model Fit, GBM
+prediction_gbm <- predict(model_gbm, testing)
+
+# Confusion Matrix and Statistics
+confusion_rf <- confusionMatrix(prediction_rf, testing$classe)
+confusion_gbm <- confusionMatrix(prediction_gbm, testing$classe)
+```
+Now we can compare the two models accuracy on the Test Data.
+ 
+Confusion Matrix for Random Forest Model:
+```{r, echo=FALSE}
+# RF
+confusion_rf
+```
+Confusion Matrix for GBM Model:
+```{r, echo=FALSE}
+
+# GBM
+confusion_gbm
+```
+ 
+Submission
+----------------------
+Because of the higher out sample Accuracy, I choose the Random Forest Model to predict the assignment test data. Finally, I get *20/20* from the assignment. 
+```{r,eval=FALSE}
+# Submission ---------------------------------------------------------------
+
+answers <- predict(model_rf, pmlTest)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+
+```
+
